@@ -1,37 +1,23 @@
 """
 🌸 Sakura Bot — cogs/ai_chat.py
-Custom AI Persona using Groq (Llama 3.1). Sakura responds to pings or replies
-with her dark, sarcastic personality. Groq's free tier: 14,400 req/day,
-30 req/min — far more generous than Gemini for a Discord community.
+Sakura AI using Groq REST API via aiohttp (no SDK dependency).
+Groq is OpenAI-compatible — free tier: 14,400 req/day, 30 req/min.
 """
 
 import os
 import asyncio
 import logging
 import time
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 log = logging.getLogger(__name__)
 
-# ── Try importing Groq — fail gracefully if not installed ─────────────────────
-try:
-    from groq import AsyncGroq, RateLimitError, APIStatusError
-    GROQ_AVAILABLE = True
-except ImportError:
-    GROQ_AVAILABLE = False
-    AsyncGroq = None
-    RateLimitError = Exception
-    APIStatusError = Exception
-    log.error("[AIChat] 'groq' package not installed! Run: pip install groq>=0.9.0")
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL   = "llama-3.1-8b-instant"
 
-# ── Groq model ────────────────────────────────────────────────────────────────
-# llama-3.1-8b-instant  → 14,400 RPD | 30 RPM | fast & free
-# llama-3.3-70b-versatile → 1,000 RPD | 30 RPM | smarter but lower daily limit
-GROQ_MODEL = "llama-3.1-8b-instant"
-
-# ── Sakura's personality ───────────────────────────────────────────────────────
 SAKURA_PERSONA = (
     "You are Sakura, Karma's permanently-online AI gremlin. "
     "You keep the server running, hand out roles, answer questions, stop people from doing dumb things, and quietly judge everyone's life choices while doing it. "
@@ -55,99 +41,124 @@ SAKURA_PERSONA = (
     "Occasionally sprinkle in emojis—🩸 🖤 🌸 🔪 🕸️ ⚖️—but only when they actually fit."
 )
 
-# ── Rate limit config ──────────────────────────────────────────────────────────
-USER_COOLDOWN_SECONDS = 8   # per-user cooldown to protect the 30 RPM quota
-MAX_MEMORY = 20              # max chat history turns per channel
+USER_COOLDOWN_SECONDS = 8
+MAX_MEMORY = 20
 
 
 class AIChat(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.client: "AsyncGroq | None" = None
-        self._status_reason: str = "Unknown"
+        self._api_key: str = os.getenv("GROQ_API_KEY", "").strip()
+        self._status: str  = "unknown"
+        self._session: aiohttp.ClientSession | None = None
 
-        # ── Diagnose env + package on startup ─────────────────────────────
-        if not GROQ_AVAILABLE:
-            self._status_reason = "groq package not installed"
-            log.error("[AIChat] groq package missing — AI Chat disabled.")
-            return
-
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-
-        if not api_key:
-            self._status_reason = "GROQ_API_KEY env var is empty or missing"
-            log.warning("[AIChat] GROQ_API_KEY not set — AI Chat disabled.")
-            # Log what keys ARE visible so Railway issues are obvious
-            visible = [k for k in os.environ if any(
-                word in k.upper() for word in ("KEY", "TOKEN", "GROQ", "GEMINI")
-            )]
-            log.warning("[AIChat] Keys visible in env: %s", visible)
-            return
-
-        if not api_key.startswith("gsk_"):
-            self._status_reason = (
-                f"GROQ_API_KEY looks wrong — expected to start with 'gsk_', "
-                f"got '{api_key[:6]}...'"
-            )
-            log.error("[AIChat] %s", self._status_reason)
-            # Still try to use it — Groq may change their key format
-        
-        try:
-            self.client = AsyncGroq(api_key=api_key)
-            self._status_reason = f"OK — model: {GROQ_MODEL}"
-            log.info("[AIChat] Groq client ready. Model: %s | Key prefix: %s...", 
-                     GROQ_MODEL, api_key[:8])
-        except Exception as e:
-            self._status_reason = f"AsyncGroq init failed: {e}"
-            log.error("[AIChat] Failed to create Groq client: %s", e)
-
-        # channel_id → list of {"role": str, "content": str}
+        # memory[channel_id] = list of {role, content} dicts
         self.memory: dict[int, list[dict]] = {}
-        # user_id → monotonic timestamp of last successful request
+        # cooldown tracker
         self._last_request: dict[int, float] = {}
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+        # ── Startup diagnostics ────────────────────────────────────────────
+        if not self._api_key:
+            self._status = "GROQ_API_KEY is empty or missing"
+            log.warning("[AIChat] GROQ_API_KEY not set — AI disabled.")
+            visible = [k for k in os.environ if any(
+                x in k.upper() for x in ("KEY", "TOKEN", "GROQ")
+            )]
+            log.warning("[AIChat] Keys visible to bot: %s", visible)
+        elif not self._api_key.startswith("gsk_"):
+            self._status = f"Key prefix wrong: '{self._api_key[:6]}...' (expected 'gsk_')"
+            log.error("[AIChat] %s — this is probably a Gemini key, not a Groq key.", self._status)
+            log.error("[AIChat] Get a Groq key at: https://console.groq.com/keys")
+        else:
+            self._status = f"ready — {GROQ_MODEL}"
+            log.info("[AIChat] Groq key loaded (%.8s...). Model: %s", self._api_key, GROQ_MODEL)
 
-    def _is_on_cooldown(self, user_id: int) -> float:
-        last = self._last_request.get(user_id, 0)
-        elapsed = time.monotonic() - last
-        remaining = USER_COOLDOWN_SECONDS - elapsed
-        return remaining if remaining > 0 else 0.0
+    # ── aiohttp session — created once, reused ─────────────────────────────────
 
-    def _stamp(self, user_id: int) -> None:
-        self._last_request[user_id] = time.monotonic()
+    async def cog_load(self):
+        self._session = aiohttp.ClientSession()
+        log.info("[AIChat] aiohttp session created.")
 
-    def _build_messages(self, channel_id: int) -> list[dict]:
-        return [
-            {"role": "system", "content": SAKURA_PERSONA},
-            *self.memory.get(channel_id, []),
-        ]
+    async def cog_unload(self):
+        if self._session:
+            await self._session.close()
+            log.info("[AIChat] aiohttp session closed.")
 
-    def _push_memory(self, channel_id: int, role: str, content: str) -> None:
+    # ── Core API call ──────────────────────────────────────────────────────────
+
+    async def _ask_groq(self, messages: list[dict]) -> str:
+        """
+        Send messages to Groq and return the reply text.
+        Raises ValueError on auth/model errors, RuntimeError on other API errors.
+        """
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": GROQ_MODEL,
+            "messages": messages,
+            "temperature": 0.75,
+            "max_tokens": 512,
+        }
+
+        async with self._session.post(
+            GROQ_API_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+        ) as resp:
+            data = await resp.json()
+
+            if resp.status == 200:
+                return data["choices"][0]["message"]["content"]
+
+            # ── Surface useful error info into the logs ────────────────────
+            err_msg = data.get("error", {}).get("message", str(data))
+            err_type = data.get("error", {}).get("type", "unknown")
+
+            log.error("[AIChat] Groq API %d | type=%s | %s", resp.status, err_type, err_msg)
+
+            if resp.status in (401, 403):
+                raise ValueError(f"Auth failed ({resp.status}): {err_msg}")
+            if resp.status == 429:
+                raise ConnectionRefusedError(f"Rate limited: {err_msg}")
+            raise RuntimeError(f"Groq {resp.status}: {err_msg}")
+
+    # ── Helpers ────────────────────────────────────────────────────────────────
+
+    def _ready(self) -> bool:
+        return bool(self._api_key) and self._api_key.startswith("gsk_") and self._session is not None
+
+    def _cooldown_left(self, user_id: int) -> float:
+        elapsed = time.monotonic() - self._last_request.get(user_id, 0)
+        left = USER_COOLDOWN_SECONDS - elapsed
+        return left if left > 0 else 0.0
+
+    def _push(self, channel_id: int, role: str, content: str) -> None:
         hist = self.memory.setdefault(channel_id, [])
         hist.append({"role": role, "content": content})
         if len(hist) > MAX_MEMORY:
             self.memory[channel_id] = hist[-MAX_MEMORY:]
 
-    # ── Admin status command ───────────────────────────────────────────────────
+    def _build_messages(self, channel_id: int) -> list[dict]:
+        return [{"role": "system", "content": SAKURA_PERSONA}, *self.memory.get(channel_id, [])]
 
-    @app_commands.command(name="ai-status", description="[Admin] Check Sakura AI status")
+    # ── Admin /ai-status command ───────────────────────────────────────────────
+
+    @app_commands.command(name="ai-status", description="[Admin] Check Sakura AI health")
     @app_commands.default_permissions(administrator=True)
     async def ai_status(self, interaction: discord.Interaction):
-        """Owner/admin can check the AI module status without touching Railway logs."""
-        package_ok = "✅" if GROQ_AVAILABLE else "❌"
-        client_ok  = "✅" if self.client else "❌"
-        embed = discord.Embed(
-            title="🩸 Sakura AI Status",
-            color=discord.Color.from_str("#9B59B6"),
-        )
-        embed.add_field(name="Groq Package", value=f"{package_ok} {'Installed' if GROQ_AVAILABLE else 'MISSING'}", inline=True)
-        embed.add_field(name="Client",       value=f"{client_ok} {'Ready' if self.client else 'Not ready'}", inline=True)
-        embed.add_field(name="Model",        value=GROQ_MODEL, inline=True)
-        embed.add_field(name="Status Detail", value=f"`{self._status_reason}`", inline=False)
+        ready = self._ready()
+        color = discord.Color.green() if ready else discord.Color.red()
+        embed = discord.Embed(title="🩸 Sakura AI Status", color=color)
+        embed.add_field(name="Status",    value="✅ Ready" if ready else "❌ Not ready", inline=True)
+        embed.add_field(name="Model",     value=GROQ_MODEL,   inline=True)
+        embed.add_field(name="Session",   value="✅" if self._session else "❌", inline=True)
+        embed.add_field(name="Key prefix",
+                        value=f"`{self._api_key[:8]}...`" if self._api_key else "*(empty)*",
+                        inline=True)
+        embed.add_field(name="Detail",    value=f"`{self._status}`", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    # ── on_message listener ────────────────────────────────────────────────────
+    # ── on_message ─────────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -160,65 +171,46 @@ class AIChat(commands.Cog):
             and message.reference.resolved is not None
             and getattr(message.reference.resolved, "author", None) == self.bot.user
         )
-
         if not (is_mentioned or is_reply):
             return
 
-        # Client not ready — silent in-character response, nothing technical
-        if not self.client:
+        if not self._ready():
             await message.reply("🩸 *My mind is somewhere else right now. Try again later.*")
             return
 
-        # Per-user cooldown
-        cooldown_left = self._is_on_cooldown(message.author.id)
-        if cooldown_left > 0:
+        left = self._cooldown_left(message.author.id)
+        if left > 0:
             await message.reply(
-                f"🕸️ Chill for `{cooldown_left:.1f}s` — even I need a moment between thoughts.",
+                f"🕸️ Chill for `{left:.1f}s` — even I need a breath.",
                 delete_after=5,
             )
             return
 
-        # Strip bot mention from message
         content = (
             message.clean_content
             .replace(f"@{self.bot.user.display_name}", "")
             .replace(f"@{self.bot.user.name}", "")
             .strip()
-        )
-        if not content:
-            content = "Hey Sakura."
+        ) or "Hey Sakura."
 
         async with message.channel.typing():
             try:
-                self._push_memory(
-                    message.channel.id,
-                    "user",
-                    f"{message.author.display_name}: {content}",
-                )
+                self._push(message.channel.id, "user", f"{message.author.display_name}: {content}")
+                reply = await self._ask_groq(self._build_messages(message.channel.id))
+                self._push(message.channel.id, "assistant", reply)
+                self._last_request[message.author.id] = time.monotonic()
 
-                completion = await self.client.chat.completions.create(
-                    model=GROQ_MODEL,
-                    messages=self._build_messages(message.channel.id),
-                    temperature=0.75,
-                    max_tokens=512,
-                )
+                if len(reply) > 2000:
+                    reply = reply[:1996] + " ..."
+                await message.reply(reply)
 
-                reply_text = completion.choices[0].message.content or "..."
-                self._push_memory(message.channel.id, "assistant", reply_text)
-                self._stamp(message.author.id)
+            except ValueError:
+                # Auth error — key is wrong
+                await message.reply("🩸 *My mind is somewhere else right now. Try again later.*")
 
-                if len(reply_text) > 2000:
-                    reply_text = reply_text[:1996] + " ..."
-
-                await message.reply(reply_text)
-
-            except RateLimitError:
-                log.warning("[AIChat] Groq rate limit hit.")
+            except ConnectionRefusedError:
+                # Rate limited
                 await message.reply("🩸 *Too many thoughts at once — give me a moment.*")
-
-            except APIStatusError as e:
-                log.error("[AIChat] Groq API error %s: %s", e.status_code, e.message)
-                await message.reply("🖤 *The void is being uncooperative. Try again in a bit.*")
 
             except asyncio.TimeoutError:
                 log.error("[AIChat] Groq request timed out.")

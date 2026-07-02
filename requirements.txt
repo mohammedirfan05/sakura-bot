@@ -9,11 +9,8 @@ aiosqlite>=0.20.0
 # Environment variable loading
 python-dotenv>=1.0.1
 
-# Async HTTP client (fun commands, future API integrations)
+# Async HTTP client — also used for Groq AI REST calls
 aiohttp>=3.9.5
 
-# Image generation (rank cards — Phase 2)
+# Image generation (rank cards)
 Pillow>=10.4.0
-
-# AI integration (Groq — free tier, high rate limits)
-groq>=0.9.0
