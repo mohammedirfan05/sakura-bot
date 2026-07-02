@@ -37,15 +37,20 @@ class TicketDatabase:
             await conn.commit()
         log.info("Ticket database initialised.")
 
-    async def create_ticket(self, channel_id: int, creator_id: int) -> None:
-        """Registers a newly created ticket in the database."""
+    async def create_ticket(self, channel_id: int, creator_id: int) -> bool:
+        """
+        Registers a newly created ticket in the database.
+        Returns True if the row was inserted (first caller), False if it already existed.
+        This is used to prevent duplicate welcome embeds during Railway process overlaps.
+        """
         now = int(time.time())
         async with aiosqlite.connect(self.path) as conn:
-            await conn.execute(
+            async with conn.execute(
                 "INSERT OR IGNORE INTO tickets (channel_id, creator_id, created_at) VALUES (?, ?, ?)",
                 (channel_id, creator_id, now)
-            )
-            await conn.commit()
+            ) as cur:
+                await conn.commit()
+                return cur.rowcount > 0
 
     async def get_ticket(self, channel_id: int) -> Optional[dict]:
         """Fetch a ticket by its channel ID."""

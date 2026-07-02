@@ -133,8 +133,19 @@ class TicketService:
                 ephemeral=True
             )
 
-        # ── Register in DB ────────────────────────────────────────────────────
-        await ticket_db.create_ticket(channel.id, user.id)
+        # ── Register in DB (idempotency guard) ───────────────────────────────
+        # Returns False if another process already inserted this channel_id.
+        # In that case, the other process will handle sending the embed — bail out now.
+        inserted = await ticket_db.create_ticket(channel.id, user.id)
+        if not inserted:
+            log.warning(
+                "create_ticket_channel: channel %s already in DB — skipping embed (duplicate process).",
+                channel.id
+            )
+            await interaction.response.send_message(
+                f"✅ Your ticket has been created: {channel.mention}", ephemeral=True
+            )
+            return
 
         # ── Build the management embed with form answers ──────────────────────
         embed = discord.Embed(
