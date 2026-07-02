@@ -1,4 +1,5 @@
 import discord
+import asyncio
 import time
 import logging
 from core.config import ROLE_IDS, CHANNEL_IDS, NEON_RED, SUCCESS_GREEN, INFO_BLUE, BASE_BLACK
@@ -146,33 +147,45 @@ class TicketService:
 
     @staticmethod
     async def close_ticket(interaction: discord.Interaction, view: discord.ui.View):
-        """Handle Close button."""
+        """Handle Close button — disables buttons, logs, then deletes the channel."""
         if not TicketService.is_staff(interaction.user):
             return await interaction.response.send_message("❌ You do not have permission to close tickets.", ephemeral=True)
 
+        channel = interaction.channel
+
+        # Mark as closed in DB
         await ticket_db.update_status(interaction.channel_id, "CLOSED")
-        
-        # Remove all member overwrites so users can't text anymore
-        for target, overwrite in interaction.channel.overwrites.items():
-            if isinstance(target, discord.Member):
-                try:
-                    await interaction.channel.set_permissions(target, overwrite=None, reason="Ticket closed")
-                except discord.Forbidden:
-                    pass
-        
-        # Disable all buttons
+
+        # Disable all buttons so nobody can click them again
         for item in view.children:
             item.disabled = True
-        
-        await interaction.response.edit_message(view=view)
-        await interaction.channel.send("🔒 This ticket has been marked as closed in Sakura's system. The user has been removed.")
 
+        # Acknowledge the interaction and update the embed buttons
+        await interaction.response.edit_message(view=view)
+
+        # Send a visible closing notice (users can read it briefly before deletion)
+        await channel.send(
+            "🔒 **Ticket Closed** — This channel will be deleted in **5 seconds**.\n"
+            f"Closed by {interaction.user.mention}."
+        )
+
+        # Log the closure BEFORE deleting the channel (so the mention still resolves)
         await TicketService.log_action(
             interaction.guild,
             title="🔒 Ticket Closed",
-            description=f"**Ticket:** #{interaction.channel.name}\n**Closed By:** {interaction.user.mention}",
+            description=f"**Ticket:** #{channel.name}\n**Closed By:** {interaction.user.mention}",
             color=NEON_RED
         )
+
+        # Wait 5 seconds so everyone can see the closing message, then delete the channel
+        await asyncio.sleep(5)
+        try:
+            await channel.delete(reason=f"Ticket closed by {interaction.user.name}")
+        except discord.Forbidden:
+            log.warning(f"Missing permissions to delete ticket channel #{channel.name}")
+            await channel.send("❌ I don't have permission to delete this channel. Please delete it manually.")
+        except discord.HTTPException as e:
+            log.warning(f"Failed to delete ticket channel #{channel.name}: {e}")
 
     @staticmethod
     async def log_action(guild: discord.Guild, title: str, description: str, color: int):
