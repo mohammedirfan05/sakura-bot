@@ -1,10 +1,11 @@
 """
 🌸 Sakura Bot — cogs/tickets/ticket_open.py
-Persistent view containing the "Open Ticket" button posted in #create-ticket.
+Persistent view containing the "Index sprites you dont have" button posted in #create-ticket.
+Clicking it opens the Sprite Index form modal before creating the ticket channel.
 """
 
 import discord
-from services.ticket_service import TicketService
+from cogs.tickets.ticket_modal import SpriteIndexModal
 
 
 class OpenTicketView(discord.ui.View):
@@ -19,4 +20,5 @@ class OpenTicketView(discord.ui.View):
         custom_id="ticket:open"
     )
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await TicketService.create_ticket_channel(interaction)
+        # Open the form — ticket channel is created only after user submits
+        await interaction.response.send_modal(SpriteIndexModal())
