@@ -15,5 +15,5 @@ aiohttp>=3.9.5
 # Image generation (rank cards — Phase 2)
 Pillow>=10.4.0
 
-# AI integration (Gemini)
-google-generativeai>=0.7.0
+# AI integration (Groq — free tier, high rate limits)
+groq>=0.9.0

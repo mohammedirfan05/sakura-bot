@@ -1,18 +1,26 @@
 """
 🌸 Sakura Bot — cogs/ai_chat.py
-Custom AI Persona using Gemini. Sakura responds to pings or replies
-with her dark, vampiric personality.
+Custom AI Persona using Groq (Llama 3.1). Sakura responds to pings or replies
+with her dark, sarcastic personality. Groq's free tier: 14,400 req/day,
+30 req/min — far more generous than Gemini for a Discord community.
 """
 
 import os
+import asyncio
 import logging
+import time
 import discord
 from discord.ext import commands
-from google import genai
-from google.genai import types
+from groq import AsyncGroq, RateLimitError, APIStatusError
 
 log = logging.getLogger(__name__)
 
+# ── Groq model to use ─────────────────────────────────────────────────────────
+# llama-3.1-8b-instant  → 14,400 RPD | 30 RPM | 6,000 TPM  (fast, great for chat)
+# llama-3.3-70b-versatile → 1,000 RPD | 30 RPM | 12,000 TPM (smarter but lower daily)
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+# ── Sakura's personality ───────────────────────────────────────────────────────
 SAKURA_PERSONA = (
     "You are Sakura, Karma's permanently-online AI gremlin. "
     "You keep the server running, hand out roles, answer questions, stop people from doing dumb things, and quietly judge everyone's life choices while doing it. "
@@ -36,83 +44,152 @@ SAKURA_PERSONA = (
     "Occasionally sprinkle in emojis—🩸 🖤 🌸 🔪 🕸️ ⚖️—but only when they actually fit."
 )
 
+# ── Rate limit config ──────────────────────────────────────────────────────────
+# Per-user cooldown: prevents one member from burning through the minute quota
+USER_COOLDOWN_SECONDS = 8
+# Max conversation history entries kept per channel (user + model turns)
+MAX_MEMORY = 20
+
+
 class AIChat(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        self.client = None
+        self.api_key = os.getenv("GROQ_API_KEY")
+        self.client: AsyncGroq | None = None
+
         if self.api_key:
-            self.client = genai.Client(api_key=self.api_key)
+            self.client = AsyncGroq(api_key=self.api_key)
+            log.info("Groq AI client initialised with model: %s", GROQ_MODEL)
         else:
-            log.warning("GEMINI_API_KEY not found in .env! AI Chat will be disabled.")
-            
-        self.memory: dict[int, list[types.Content]] = {}
-        self.max_memory = 15
+            log.warning("GROQ_API_KEY not found in .env — AI Chat is disabled.")
+
+        # channel_id → list of {"role": str, "content": str}
+        self.memory: dict[int, list[dict]] = {}
+
+        # user_id → timestamp of last request (for per-user cooldown)
+        self._last_request: dict[int, float] = {}
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _is_on_cooldown(self, user_id: int) -> float:
+        """Returns remaining cooldown seconds, or 0 if the user is free to go."""
+        last = self._last_request.get(user_id, 0)
+        elapsed = time.monotonic() - last
+        remaining = USER_COOLDOWN_SECONDS - elapsed
+        return remaining if remaining > 0 else 0
+
+    def _stamp(self, user_id: int) -> None:
+        self._last_request[user_id] = time.monotonic()
+
+    def _build_messages(self, channel_id: int) -> list[dict]:
+        """Returns the full message list with the system prompt prepended."""
+        return [
+            {"role": "system", "content": SAKURA_PERSONA},
+            *self.memory.get(channel_id, []),
+        ]
+
+    def _push_memory(self, channel_id: int, role: str, content: str) -> None:
+        if channel_id not in self.memory:
+            self.memory[channel_id] = []
+        self.memory[channel_id].append({"role": role, "content": content})
+        # Keep only the last MAX_MEMORY turns to avoid context overload
+        if len(self.memory[channel_id]) > MAX_MEMORY:
+            self.memory[channel_id] = self.memory[channel_id][-MAX_MEMORY:]
+
+    # ── Listener ──────────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
 
+        # Only respond when mentioned or when replying to Sakura
         is_mentioned = self.bot.user in message.mentions
-        is_reply = False
-        if message.reference and message.reference.resolved:
-            if getattr(message.reference.resolved, "author", None) == self.bot.user:
-                is_reply = True
+        is_reply = (
+            message.reference is not None
+            and message.reference.resolved is not None
+            and getattr(message.reference.resolved, "author", None) == self.bot.user
+        )
 
         if not (is_mentioned or is_reply):
             return
 
         if not self.client:
-            await message.channel.send("🩸 *My mind is currently disconnected. (GEMINI_API_KEY is missing from `.env`)*")
+            await message.channel.send(
+                "🖤 *Sakura's brain is offline. (`GROQ_API_KEY` missing from `.env`)*"
+            )
             return
-            
-        content = message.clean_content.replace(f"@{self.bot.user.display_name}", "").replace(f"@{self.bot.user.name}", "").strip()
+
+        # ── Per-user cooldown check ────────────────────────────────────────
+        cooldown_left = self._is_on_cooldown(message.author.id)
+        if cooldown_left > 0:
+            await message.reply(
+                f"🕸️ Chill for `{cooldown_left:.1f}s` — even I need a moment between thoughts.",
+                delete_after=5,
+            )
+            return
+
+        # ── Strip mention from message ─────────────────────────────────────
+        content = (
+            message.clean_content
+            .replace(f"@{self.bot.user.display_name}", "")
+            .replace(f"@{self.bot.user.name}", "")
+            .strip()
+        )
         if not content:
-            content = "Hello, Sakura."
+            content = "Hey Sakura."
 
         async with message.channel.typing():
             try:
-                channel_id = message.channel.id
-                if channel_id not in self.memory:
-                    self.memory[channel_id] = []
-                    
-                self.memory[channel_id].append(
-                    types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=f"{message.author.display_name}: {content}")]
-                    )
-                )
-                
-                if len(self.memory[channel_id]) > self.max_memory:
-                    self.memory[channel_id] = self.memory[channel_id][-self.max_memory:]
-
-                response = await self.client.aio.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=self.memory[channel_id],
-                    config=types.GenerateContentConfig(
-                        system_instruction=SAKURA_PERSONA,
-                        temperature=0.7,
-                    )
-                )
-                
-                reply_text = response.text
-
-                self.memory[channel_id].append(
-                    types.Content(
-                        role="model",
-                        parts=[types.Part.from_text(text=reply_text)]
-                    )
+                # Add user message to memory
+                self._push_memory(
+                    message.channel.id,
+                    "user",
+                    f"{message.author.display_name}: {content}",
                 )
 
+                # Call Groq
+                completion = await self.client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=self._build_messages(message.channel.id),
+                    temperature=0.75,
+                    max_tokens=512,   # Keep replies concise; Discord has 2000 char limit
+                )
+
+                reply_text = completion.choices[0].message.content or "..."
+
+                # Store Sakura's reply in memory
+                self._push_memory(message.channel.id, "assistant", reply_text)
+
+                # Stamp the user's cooldown
+                self._stamp(message.author.id)
+
+                # Discord hard limit
                 if len(reply_text) > 2000:
-                    reply_text = reply_text[:1996] + "..."
-                    
+                    reply_text = reply_text[:1996] + " ..."
+
                 await message.reply(reply_text)
 
+            except RateLimitError:
+                log.warning("Groq rate limit hit — backing off.")
+                await message.reply(
+                    "🩸 Too many questions flying at me right now — give it a minute and try again."
+                )
+
+            except APIStatusError as e:
+                log.error("Groq API error %s: %s", e.status_code, e.message)
+                await message.reply(
+                    "🖤 Something broke on Groq's end. Not my fault this time."
+                )
+
+            except asyncio.TimeoutError:
+                log.error("Groq request timed out.")
+                await message.reply("🕸️ Groq took too long. Try again in a sec.")
+
             except Exception as e:
-                log.error("Error generating AI response: %s", e, exc_info=True)
-                await message.reply("🩸 *The shadows cloud my vision... I cannot answer right now.*")
+                log.error("Unexpected AI error: %s", e, exc_info=True)
+                await message.reply("🩸 *Something went sideways. Try again.*")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AIChat(bot))
