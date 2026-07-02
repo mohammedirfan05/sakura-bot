@@ -14,7 +14,7 @@ class OpenTicketView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="🎟 Open Ticket",
+        label="Index sprites you dont have",
         style=discord.ButtonStyle.danger,
         custom_id="ticket:open"
     )

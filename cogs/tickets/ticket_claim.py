@@ -47,11 +47,19 @@ class TicketClaim(commands.Cog):
     # ── /ticket-panel ──────────────────────────────────────────────────────────
     @app_commands.command(
         name="ticket-panel",
-        description="Post the Sakura ticket panel in this channel. (Staff only)"
+        description="Post the permanent Sakura ticket panel in #create-ticket. (Staff only)"
     )
     @is_staff()
     async def ticket_panel(self, interaction: discord.Interaction):
-        """Posts the Open Ticket embed. Run this once in #create-ticket."""
+        """Posts the Open Ticket embed permanently in #create-ticket."""
+        # Always post to #create-ticket regardless of where command is run
+        target_channel = interaction.guild.get_channel(CHANNEL_IDS["create_ticket"])
+        if not target_channel:
+            return await interaction.response.send_message(
+                "❌ Could not find the #create-ticket channel. Check the channel ID in config.py.",
+                ephemeral=True
+            )
+
         embed = discord.Embed(
             title="🎟 Karma Court — Support Tickets",
             description=(
@@ -72,10 +80,11 @@ class TicketClaim(commands.Cog):
         embed.set_footer(text="🌸 Sakura — Karma Server Support System")
 
         view = OpenTicketView()
-        await interaction.channel.send(embed=embed, view=view)
+        await target_channel.send(embed=embed, view=view)
         await interaction.response.send_message(
-            "✅ Ticket panel posted successfully.", ephemeral=True
+            f"✅ Permanent ticket panel posted in {target_channel.mention}.", ephemeral=True
         )
+
 
 
 async def setup(bot: commands.Bot):
