@@ -1,6 +1,8 @@
 """
 🌸 Sakura Bot — cogs/tickets/ticket_events.py
-Previously used to detect Ticket Tool channel creation events.
-Ticket Tool has been removed — Sakura now owns the full ticket lifecycle.
-This file is intentionally empty. Kept to avoid import errors from older references.
+This file is intentionally inert. Ticket Tool has been fully removed.
+Sakura creates its own ticket channels — no bridge listener is needed.
+
+NOTE: If this listener is ever re-enabled, always check for [SAKURA_MANAGED]
+in the channel topic before calling handle_new_ticket, to avoid double-posting.
 """

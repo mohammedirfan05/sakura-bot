@@ -118,7 +118,7 @@ class TicketService:
                 name=channel_name,
                 overwrites=overwrites,
                 category=category,
-                topic=f"Ticket opened by {user.name} ({user.id})",
+                topic=f"[SAKURA_MANAGED] Ticket opened by {user.name} ({user.id})",
                 reason=f"Ticket opened by {user.name}"
             )
         except discord.Forbidden:
