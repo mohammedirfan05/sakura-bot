@@ -1,0 +1,51 @@
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# ── Virtual Environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Database ──────────────────────────────────────────────────────────────────
+data/*.db
+data/*.db-shm
+data/*.db-wal
+# Keep the data/ directory tracked (for Railway volume mount point)
+!data/.gitkeep
+
+# ── Deployment ────────────────────────────────────────────────────────────────
+.railway/
+
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Coverage / Testing ────────────────────────────────────────────────────────
+.coverage
+htmlcov/
+.pytest_cache/

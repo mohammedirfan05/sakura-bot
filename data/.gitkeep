@@ -1,0 +1,3 @@
+# This file ensures the data/ directory is tracked by git.
+# SQLite .db files are gitignored (see ../.gitignore).
+# On Railway, mount a persistent volume to /app/data to preserve the database.
