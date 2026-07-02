@@ -59,9 +59,10 @@ class AIChat(commands.Cog):
 
         if self.api_key:
             self.client = AsyncGroq(api_key=self.api_key)
-            log.info("Groq AI client initialised with model: %s", GROQ_MODEL)
+            log.info("[AIChat] Groq client ready. Model: %s", GROQ_MODEL)
         else:
-            log.warning("GROQ_API_KEY not found in .env — AI Chat is disabled.")
+            log.warning("[AIChat] GROQ_API_KEY not found in environment — AI Chat disabled.")
+            log.warning("[AIChat] Env vars present: %s", [k for k in os.environ if 'KEY' in k or 'TOKEN' in k or 'GROQ' in k])
 
         # channel_id → list of {"role": str, "content": str}
         self.memory: dict[int, list[dict]] = {}
@@ -115,8 +116,8 @@ class AIChat(commands.Cog):
             return
 
         if not self.client:
-            await message.channel.send(
-                "🖤 *Sakura's brain is offline. (`GROQ_API_KEY` missing from `.env`)*"
+            await message.reply(
+                "🩸 *My mind is somewhere else right now. Try again later.*"
             )
             return
 
@@ -171,24 +172,24 @@ class AIChat(commands.Cog):
                 await message.reply(reply_text)
 
             except RateLimitError:
-                log.warning("Groq rate limit hit — backing off.")
+                log.warning("Groq rate limit hit.")
                 await message.reply(
-                    "🩸 Too many questions flying at me right now — give it a minute and try again."
+                    "🩸 *Too many thoughts at once — give me a moment.*"
                 )
 
             except APIStatusError as e:
                 log.error("Groq API error %s: %s", e.status_code, e.message)
                 await message.reply(
-                    "🖤 Something broke on Groq's end. Not my fault this time."
+                    "🖤 *The void is being uncooperative. Try again in a bit.*"
                 )
 
             except asyncio.TimeoutError:
                 log.error("Groq request timed out.")
-                await message.reply("🕸️ Groq took too long. Try again in a sec.")
+                await message.reply("🕸️ *Lost my train of thought. Try again.*")
 
             except Exception as e:
                 log.error("Unexpected AI error: %s", e, exc_info=True)
-                await message.reply("🩸 *Something went sideways. Try again.*")
+                await message.reply("🩸 *The shadows cloud my vision... try again.*")
 
 
 async def setup(bot: commands.Bot):
