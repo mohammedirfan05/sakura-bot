@@ -149,7 +149,7 @@ CHANNEL_IDS = {
     "logs":           1521348261586145341,   # General / voice / role logs
     "mod_logs":       1521348261586145341,   # Moderation action logs — TODO: split to own channel
     "join_leave_logs":1521558685963386961,   # ✅ mapped to actual #joins channel
-    "ticket_logs":    1,                     # TODO: Replace with actual Ticket Logs Channel ID
+    "ticket_logs":    1521348261586145341,  # Using #logs until a dedicated #ticket-logs channel is created — update when ready
 
     # 🖤 ECHO CHAMBERS
     "karma_lounge": 1521348228002480179,

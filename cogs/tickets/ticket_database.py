@@ -57,6 +57,17 @@ class TicketDatabase:
                 row = await cur.fetchone()
                 return dict(row) if row else None
 
+    async def get_open_ticket_by_user(self, creator_id: int) -> Optional[dict]:
+        """Return the most recent open/claimed ticket for a user, or None."""
+        async with aiosqlite.connect(self.path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM tickets WHERE creator_id = ? AND status IN ('OPEN', 'CLAIMED') ORDER BY created_at DESC LIMIT 1",
+                (creator_id,)
+            ) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
     async def claim_ticket(self, channel_id: int, claimer_id: int) -> bool:
         """Mark a ticket as CLAIMED by a staff member."""
         now = int(time.time())

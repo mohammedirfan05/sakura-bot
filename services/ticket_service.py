@@ -25,34 +25,152 @@ class TicketService:
         return bool(allowed_roles & member_role_ids)
 
     @staticmethod
-    async def handle_new_ticket(channel: discord.TextChannel):
-        """Called when a new ticket channel is created."""
+    async def create_ticket_channel(interaction: discord.Interaction):
+        """Called when a user clicks 'Open Ticket'. Creates the private channel."""
         from cogs.tickets.ticket_buttons import TicketView
 
-        # We assume Ticket Tool sets the channel topic to the creator ID, or we fetch from DB/audit logs.
-        # But wait, without reading audit logs, how do we know the creator?
-        # A common way is the first message ping, or we just store `None` if unknown.
-        # For now, we'll store 0 as creator if we can't figure it out immediately.
-        creator_id = 0
-        
-        # 1. Register in DB
+        guild = interaction.guild
+        user = interaction.user
+
+        # ── Duplicate check ──────────────────────────────────────────────────
+        existing = await ticket_db.get_open_ticket_by_user(user.id)
+        if existing:
+            existing_channel = guild.get_channel(existing["channel_id"])
+            if existing_channel:
+                return await interaction.response.send_message(
+                    f"❌ You already have an open ticket: {existing_channel.mention}\n"
+                    "Please use that ticket or ask staff to close it first.",
+                    ephemeral=True
+                )
+            # Channel was deleted externally — clean up DB and let them open a new one
+            await ticket_db.update_status(existing["channel_id"], "CLOSED")
+
+        # ── Build channel name (safe lowercase alphanumeric) ─────────────────
+        safe_name = "".join(c for c in user.display_name.lower() if c.isalnum() or c == "-").strip("-")
+        if not safe_name:
+            safe_name = str(user.id)
+        channel_name = f"ticket-{safe_name}"[:100]
+
+        # ── Permission overwrites ─────────────────────────────────────────────
+        overwrites: dict = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                attach_files=True,
+                read_message_history=True
+            ),
+        }
+
+        staff_keys = ["owner", "co_owner", "developer", "head_admin", "admin",
+                      "moderator", "trial_moderator", "volunteer"]
+        for key in staff_keys:
+            role = guild.get_role(ROLE_IDS.get(key, 0))
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    manage_messages=True,
+                    manage_channels=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    embed_links=True,
+                )
+
+        bot_member = guild.get_member(interaction.client.user.id)
+        if bot_member:
+            overwrites[bot_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+                add_reactions=True,
+                attach_files=True,
+                embed_links=True,
+                pin_messages=True,
+            )
+
+        # ── Create the channel ────────────────────────────────────────────────
+        from core.config import CATEGORY_IDS
+        category = guild.get_channel(CATEGORY_IDS.get("karma_court", 0))
+        try:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                category=category,
+                topic=f"Ticket opened by {user.name} ({user.id})",
+                reason=f"Ticket opened by {user.name}"
+            )
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "❌ I don't have permission to create channels. Please contact a staff member.",
+                ephemeral=True
+            )
+        except discord.HTTPException as e:
+            log.error("Failed to create ticket channel: %s", e)
+            return await interaction.response.send_message(
+                "❌ Failed to create your ticket. Please try again.",
+                ephemeral=True
+            )
+
+        # ── Register in DB ────────────────────────────────────────────────────
+        await ticket_db.create_ticket(channel.id, user.id)
+
+        # ── Send management embed inside the ticket ───────────────────────────
+        embed = discord.Embed(
+            title="🌸 Ticket Management",
+            description=(
+                f"Welcome {user.mention}! 👋\n\n"
+                "A member of staff will be with you shortly.\n"
+                "Please describe your issue below while you wait."
+            ),
+            color=BASE_BLACK
+        )
+        embed.set_footer(text="Staff: use the buttons below to manage this ticket.")
+        view = TicketView()
+        msg = await channel.send(embed=embed, view=view)
+        try:
+            await msg.pin(reason="Sakura Ticket Management Pin")
+        except discord.Forbidden:
+            log.warning("Missing permission to pin in %s", channel.name)
+
+        # Ping the opener so they get a notification
+        await channel.send(f"{user.mention} — your ticket is ready! Please state your issue.")
+
+        # ── Log ───────────────────────────────────────────────────────────────
+        await TicketService.log_action(
+            guild,
+            title="🎟️ Ticket Opened",
+            description=f"**Ticket:** {channel.mention}\n**Opened By:** {user.mention}",
+            color=SUCCESS_GREEN
+        )
+
+        # ── Acknowledge the interaction ───────────────────────────────────────
+        await interaction.response.send_message(
+            f"✅ Your ticket has been created: {channel.mention}",
+            ephemeral=True
+        )
+
+    @staticmethod
+    async def handle_new_ticket(channel: discord.TextChannel, creator_id: int):
+        """Sends the Sakura management embed into an already-created ticket channel."""
+        from cogs.tickets.ticket_buttons import TicketView
+
         await ticket_db.create_ticket(channel.id, creator_id)
 
-        # 2. Send Sakura embed
         embed = discord.Embed(
             title="🌸 Ticket Management",
             description="Staff: Use the buttons below to manage this ticket.",
             color=BASE_BLACK
         )
         view = TicketView()
-        
         msg = await channel.send(embed=embed, view=view)
-        
-        # 3. Pin the Sakura message
         try:
             await msg.pin(reason="Sakura Ticket Management Pin")
         except discord.Forbidden:
             log.warning(f"Missing permissions to pin message in {channel.name}")
+
 
     @staticmethod
     async def claim_ticket(interaction: discord.Interaction, view: discord.ui.View):

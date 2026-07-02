@@ -59,13 +59,14 @@ class SakuraBot(commands.Bot):
                 except Exception as exc:
                     log.error("Failed to load cog %s: %s", cog_name, exc, exc_info=True)
 
-        # Load nested cogs (Tickets)
+        # Load nested cogs (Tickets — loads TicketClaim which registers all persistent views)
         try:
             await self.load_extension("cogs.tickets.ticket_claim")
             log.info("Loaded cog: cogs.tickets.ticket_claim")
             cogs_loaded += 1
         except Exception as exc:
             log.error("Failed to load cog cogs.tickets.ticket_claim: %s", exc, exc_info=True)
+
 
         log.info("Loaded %d cogs", cogs_loaded)
 
