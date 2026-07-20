@@ -18,16 +18,55 @@ log = logging.getLogger(__name__)
 
 
 def is_staff():
-    """App command check: only owner/co_owner/admin can run staff commands."""
+    """App command check: only owner/co_owner/admin/moderator can run staff commands."""
     async def predicate(interaction: discord.Interaction) -> bool:
         allowed = {
             ROLE_IDS.get("owner"),
             ROLE_IDS.get("co_owner"),
             ROLE_IDS.get("admin"),
+            ROLE_IDS.get("moderator"),
         }
         member_role_ids = {r.id for r in interaction.user.roles}
         return bool(allowed & member_role_ids)
     return app_commands.check(predicate)
+
+
+# ── Ticket Role Group ──────────────────────────────────────────────────────────
+# Defined outside the Cog class so @ticket_role.command() works correctly.
+ticket_role = app_commands.Group(
+    name="ticket-role",
+    description="Manage which roles can view and manage tickets (Staff only)"
+)
+
+
+@ticket_role.command(name="add", description="Grant a role access to view and manage tickets")
+@is_staff()
+async def ticket_role_add(interaction: discord.Interaction, role: discord.Role):
+    """Whitelists a new role for ticket management."""
+    success = await ticket_db.add_ticket_role(role.id, interaction.user.id)
+    if success:
+        await interaction.response.send_message(
+            f"✅ **{role.name}** can now view and manage tickets.", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"ℹ️ **{role.name}** is already authorized to manage tickets.", ephemeral=True
+        )
+
+
+@ticket_role.command(name="remove", description="Revoke a role's access to ticket management")
+@is_staff()
+async def ticket_role_remove(interaction: discord.Interaction, role: discord.Role):
+    """Removes a role from the ticket management whitelist."""
+    success = await ticket_db.remove_ticket_role(role.id)
+    if success:
+        await interaction.response.send_message(
+            f"✅ **{role.name}** has been removed from ticket management.", ephemeral=True
+        )
+    else:
+        await interaction.response.send_message(
+            f"ℹ️ **{role.name}** was not in the ticket management list.", ephemeral=True
+        )
 
 
 class TicketClaim(commands.Cog):
@@ -52,7 +91,6 @@ class TicketClaim(commands.Cog):
     @is_staff()
     async def ticket_panel(self, interaction: discord.Interaction):
         """Posts the Open Ticket embed permanently in #create-ticket."""
-        # Always post to #create-ticket regardless of where command is run
         target_channel = interaction.guild.get_channel(CHANNEL_IDS["create_ticket"])
         if not target_channel:
             return await interaction.response.send_message(
@@ -85,41 +123,9 @@ class TicketClaim(commands.Cog):
             f"✅ Permanent ticket panel posted in {target_channel.mention}.", ephemeral=True
         )
 
-    # ── /ticket-role ───────────────────────────────────────────────────────────
-    @app_commands.group(name="ticket-role", description="Manage dynamic ticket roles (Staff only)")
-    @is_staff()
-    async def ticket_role(self, interaction: discord.Interaction):
-        """Base group — subcommands are add and remove."""
-        pass
-
-    @ticket_role.command(name="add", description="Add a role to have access to ticket management")
-    @is_staff()
-    async def ticket_role_add(self, interaction: discord.Interaction, role: discord.Role):
-        """Allows staff to whitelist a new role for ticket management."""
-        success = await ticket_db.add_ticket_role(role.id, interaction.user.id)
-        if success:
-            await interaction.response.send_message(
-                f"✅ The {role.mention} role can now manage and view tickets.", ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"ℹ️ The {role.mention} role is already authorized to manage tickets.", ephemeral=True
-            )
-
-    @ticket_role.command(name="remove", description="Remove a role from ticket management access")
-    @is_staff()
-    async def ticket_role_remove(self, interaction: discord.Interaction, role: discord.Role):
-        """Removes a role from being able to manage tickets."""
-        success = await ticket_db.remove_ticket_role(role.id)
-        if success:
-            await interaction.response.send_message(
-                f"✅ The {role.mention} role has been removed from ticket management.", ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"ℹ️ The {role.mention} role was not authorized to manage tickets.", ephemeral=True
-            )
-
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(TicketClaim(bot))
+    cog = TicketClaim(bot)
+    await bot.add_cog(cog)
+    # Manually add the standalone group to the bot's command tree
+    bot.tree.add_command(ticket_role)
