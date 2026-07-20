@@ -63,7 +63,6 @@ class CustomCommands(commands.Cog):
         )
         sections = {
             "🛡️ Moderation": "/ban /kick /timeout /warn /warnings /unwarn /clear /lock /unlock /slowmode",
-            "📊 Leveling":   "/rank /leaderboard",
             "🪙 Economy":    "/daily /work /balance /pay  *(coming soon)*",
             "🎉 Giveaways":  "/giveaway start · /giveaway reroll  *(coming soon)*",
             "🤖 AI Chat":    "Chat with Sakura in designated channels  *(coming soon)*",

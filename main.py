@@ -14,7 +14,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 INITIAL_EXTENSIONS = [
     "cogs.custom_commands",
     "cogs.fun",
-    "cogs.leveling",
     "cogs.logging",
     "cogs.moderation",
     "cogs.reaction_roles",

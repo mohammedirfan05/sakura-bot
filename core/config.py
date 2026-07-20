@@ -85,17 +85,7 @@ AUTHORIZED_ASSIGNER_IDS = [
     ROLE_IDS["co_owner"],
 ]
 
-# Level milestone roles  {level: role_id}  (low → high)
-LEVEL_ROLES = {
-    5:  ROLE_IDS["crimson_soul"],
-    10: ROLE_IDS["fallen_blossom"],
-    20: ROLE_IDS["kitsune"],
-    30: ROLE_IDS["ronin"],
-    40: ROLE_IDS["dragon_shadow"],
-    50: ROLE_IDS["reaper"],
-    60: ROLE_IDS["karma_elite"],
-    70: ROLE_IDS["karma_legend"],
-}
+
 
 # ───────────────────────────────
 #  CHANNEL IDs  (verified against live server 2026-07-01)
@@ -176,24 +166,6 @@ CATEGORY_IDS = {
     "echo_chambers":  1521347886510772318,
 }
 
-# ─────────────────────────────────────────────
-#  XP / LEVELING CONSTANTS
-# ─────────────────────────────────────────────
-XP_MIN             = 15   # Minimum XP per eligible message
-XP_MAX             = 25   # Maximum XP per eligible message
-XP_COOLDOWN_SECONDS = 60  # Cooldown between XP awards per user
-
-# Channels where XP is awarded (keys from CHANNEL_IDS)
-XP_CHANNEL_KEYS = [
-    "general",
-    "gaming_chat",
-    "fortnite_chat",
-    "looking_for_party",
-    "introductions",
-    "clips",
-    "memes",
-    "other_games",
-]
 
 # ─────────────────────────────────────────────
 #  WARN THRESHOLDS (auto-punishment escalation)
