@@ -17,7 +17,7 @@ class TicketService:
     """Service to handle ticket business logic cleanly."""
 
     @staticmethod
-    def is_staff(member: discord.Member) -> bool:
+    async def is_staff(member: discord.Member) -> bool:
         """Check if user has permission to manage tickets."""
         allowed_roles = {
             ROLE_IDS.get("owner"),
@@ -27,7 +27,14 @@ class TicketService:
             ROLE_IDS.get("volunteer")
         }
         member_role_ids = {role.id for role in member.roles}
-        return bool(allowed_roles & member_role_ids)
+        
+        # Check hardcoded roles first
+        if bool(allowed_roles & member_role_ids):
+            return True
+            
+        # Check dynamic ticket roles
+        dynamic_roles = set(await ticket_db.get_ticket_roles())
+        return bool(dynamic_roles & member_role_ids)
 
     # ── Ticket Creation ────────────────────────────────────────────────────────
 
@@ -83,18 +90,27 @@ class TicketService:
             "owner", "co_owner", "developer", "head_admin", "admin",
             "moderator", "trial_moderator", "volunteer"
         ]
+        staff_roles = []
         for key in staff_keys:
-            role = guild.get_role(ROLE_IDS.get(key, 0))
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    manage_messages=True,
-                    manage_channels=True,
-                    read_message_history=True,
-                    attach_files=True,
-                    embed_links=True,
-                )
+            r = guild.get_role(ROLE_IDS.get(key, 0))
+            if r: staff_roles.append(r)
+            
+        dynamic_role_ids = await ticket_db.get_ticket_roles()
+        for r_id in dynamic_role_ids:
+            r = guild.get_role(r_id)
+            if r and r not in staff_roles:
+                staff_roles.append(r)
+
+        for role in staff_roles:
+            overwrites[role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+            )
 
         bot_member = guild.get_member(interaction.client.user.id)
         if bot_member:
@@ -196,7 +212,7 @@ class TicketService:
     @staticmethod
     async def claim_ticket(interaction: discord.Interaction, view: discord.ui.View):
         """Handle the Claim Ticket button."""
-        if not TicketService.is_staff(interaction.user):
+        if not await TicketService.is_staff(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission to claim tickets.", ephemeral=True
             )
@@ -273,7 +289,7 @@ class TicketService:
     @staticmethod
     async def open_rename_modal(interaction: discord.Interaction):
         """Open the Rename Modal for the Rename button."""
-        if not TicketService.is_staff(interaction.user):
+        if not await TicketService.is_staff(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission to rename tickets.", ephemeral=True
             )
@@ -315,7 +331,7 @@ class TicketService:
     @staticmethod
     async def close_ticket(interaction: discord.Interaction, view: discord.ui.View):
         """Handle Close button — disables buttons, logs, then deletes the channel."""
-        if not TicketService.is_staff(interaction.user):
+        if not await TicketService.is_staff(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission to close tickets.", ephemeral=True
             )

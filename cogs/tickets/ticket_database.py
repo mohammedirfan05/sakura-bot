@@ -34,6 +34,12 @@ class TicketDatabase:
                     closed_at INTEGER
                 );
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_roles (
+                    role_id INTEGER PRIMARY KEY,
+                    added_by INTEGER NOT NULL
+                );
+            """)
             await conn.commit()
         log.info("Ticket database initialised.")
 
@@ -100,5 +106,32 @@ class TicketDatabase:
                     (status, channel_id)
                 )
             await conn.commit()
+
+    async def add_ticket_role(self, role_id: int, added_by: int) -> bool:
+        """Add a role to the authorized ticket managers list."""
+        async with aiosqlite.connect(self.path) as conn:
+            async with conn.execute(
+                "INSERT OR IGNORE INTO ticket_roles (role_id, added_by) VALUES (?, ?)",
+                (role_id, added_by)
+            ) as cur:
+                await conn.commit()
+                return cur.rowcount > 0
+
+    async def remove_ticket_role(self, role_id: int) -> bool:
+        """Remove a role from the authorized ticket managers list."""
+        async with aiosqlite.connect(self.path) as conn:
+            async with conn.execute(
+                "DELETE FROM ticket_roles WHERE role_id = ?",
+                (role_id,)
+            ) as cur:
+                await conn.commit()
+                return cur.rowcount > 0
+
+    async def get_ticket_roles(self) -> list[int]:
+        """Get all authorized dynamic ticket role IDs."""
+        async with aiosqlite.connect(self.path) as conn:
+            async with conn.execute("SELECT role_id FROM ticket_roles") as cur:
+                rows = await cur.fetchall()
+                return [row[0] for row in rows]
 
 ticket_db = TicketDatabase()

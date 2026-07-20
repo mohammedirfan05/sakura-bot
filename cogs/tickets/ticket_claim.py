@@ -32,6 +32,8 @@ def is_staff():
 
 class TicketClaim(commands.Cog):
     """Main cog for the Sakura Ticket System."""
+    
+    ticket_role_group = app_commands.Group(name="ticket-role", description="Manage dynamic ticket roles (Staff only)")
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -84,6 +86,27 @@ class TicketClaim(commands.Cog):
         await interaction.response.send_message(
             f"✅ Permanent ticket panel posted in {target_channel.mention}.", ephemeral=True
         )
+
+    # ── /ticket-role ───────────────────────────────────────────────────────────
+    @ticket_role_group.command(name="add", description="Add a role to have access to ticket management")
+    @is_staff()
+    async def ticket_role_add(self, interaction: discord.Interaction, role: discord.Role):
+        """Allows staff to whitelist a new role for ticket management."""
+        success = await ticket_db.add_ticket_role(role.id, interaction.user.id)
+        if success:
+            await interaction.response.send_message(f"✅ The {role.mention} role can now manage and view tickets.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ The {role.mention} role is already authorized to manage tickets.", ephemeral=True)
+
+    @ticket_role_group.command(name="remove", description="Remove a role from ticket management access")
+    @is_staff()
+    async def ticket_role_remove(self, interaction: discord.Interaction, role: discord.Role):
+        """Removes a role from being able to manage tickets."""
+        success = await ticket_db.remove_ticket_role(role.id)
+        if success:
+            await interaction.response.send_message(f"✅ The {role.mention} role has been removed from ticket management.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ The {role.mention} role was not authorized to manage tickets.", ephemeral=True)
 
 
 
