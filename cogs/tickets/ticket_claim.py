@@ -11,7 +11,7 @@ import logging
 
 from core.config import ROLE_IDS, CHANNEL_IDS, BASE_BLACK, DEEP_CRIMSON
 from cogs.tickets.ticket_database import ticket_db
-from cogs.tickets.ticket_buttons import TicketView
+from cogs.tickets.ticket_buttons import TicketView, WinnerTicketView
 from cogs.tickets.ticket_open import OpenTicketView
 
 log = logging.getLogger(__name__)
@@ -80,6 +80,7 @@ class TicketClaim(commands.Cog):
         await ticket_db.init()
         # Register persistent views so buttons survive bot restarts
         self.bot.add_view(TicketView())
+        self.bot.add_view(WinnerTicketView())
         self.bot.add_view(OpenTicketView())
         log.info("Ticket system initialised — persistent views registered.")
 
@@ -99,23 +100,24 @@ class TicketClaim(commands.Cog):
             )
 
         embed = discord.Embed(
-            title="🎟 Karma Court — Support Tickets",
+            title="🎟 Karma Court — Support & Winner Tickets",
             description=(
-                "Need help from staff? Open a private ticket below.\n\n"
-                "**📌 Before you open a ticket:**\n"
+                "Need help from staff or won a Custom Game? Open a private ticket below!\n\n"
+                "**🎟️ Sprite Index Tickets:**\n"
                 "• Maximum **4 sprite requests** per ticket\n"
-                "• Return borrowed sprites after indexing\n"
-                "• Confirmed scams result in a **permanent ban**\n"
+                "• Return borrowed sprites after indexing\n\n"
+                "**🏆 Custom Games Winner Claims:**\n"
+                "• Fill out Epic Games username & win details\n"
+                "• Upload Victory Royale screenshot for staff verification\n"
+                "• Claim your V-Bucks or custom prizes\n\n"
+                "**📌 General Rules:**\n"
+                "• Confirmed scams, cheating, or teaming result in a **permanent ban**\n"
                 "• Tickets inactive for **24 hours** may be closed\n\n"
-                "**🩸 What to include in your ticket:**\n"
-                "• A clear description of your issue\n"
-                "• Any relevant screenshots or evidence\n"
-                "• Your in-game name (if applicable)\n\n"
-                "*Click the button below to open a private ticket with staff.*"
+                "*Click one of the buttons below to open a private ticket with staff.*"
             ),
             color=DEEP_CRIMSON
         )
-        embed.set_footer(text="🌸 Sakura — Karma Server Support System")
+        embed.set_footer(text="🌸 Sakura — Karma Server Support & Winner System")
 
         view = OpenTicketView()
         await target_channel.send(embed=embed, view=view)
@@ -129,3 +131,4 @@ async def setup(bot: commands.Bot):
     await bot.add_cog(cog)
     # Manually add the standalone group to the bot's command tree
     bot.tree.add_command(ticket_role)
+

@@ -20,7 +20,7 @@ class TicketDatabase:
         self.path = path
 
     async def init(self) -> None:
-        """Create the tickets table if it doesn't exist."""
+        """Create the tickets table and perform idempotent migrations if needed."""
         async with aiosqlite.connect(self.path) as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS tickets (
@@ -40,20 +40,59 @@ class TicketDatabase:
                     added_by INTEGER NOT NULL
                 );
             """)
-            await conn.commit()
-        log.info("Ticket database initialised.")
+            
+            # Idempotent column additions for Winner Claim features
+            columns = [
+                ("ticket_type", "TEXT DEFAULT 'SPRITE'"),
+                ("epic_name", "TEXT"),
+                ("discord_username", "TEXT"),
+                ("game_mode", "TEXT"),
+                ("date_won", "TEXT"),
+                ("proof_url", "TEXT"),
+                ("winner_confirmed", "INTEGER DEFAULT 0"),
+                ("rules_checked", "INTEGER DEFAULT 0"),
+                ("win_limit_checked", "INTEGER DEFAULT 0"),
+                ("prize_approved", "INTEGER DEFAULT 0"),
+                ("prize_sent", "INTEGER DEFAULT 0"),
+                ("prize_sent_by", "INTEGER"),
+                ("prize_sent_at", "INTEGER"),
+                ("winner_status", "TEXT DEFAULT '🟡 Waiting for Verification'")
+            ]
+            for col_name, col_type in columns:
+                try:
+                    await conn.execute(f"ALTER TABLE tickets ADD COLUMN {col_name} {col_type};")
+                except Exception:
+                    # Column already exists
+                    pass
 
-    async def create_ticket(self, channel_id: int, creator_id: int) -> bool:
+            await conn.commit()
+        log.info("Ticket database initialised with schema migrations.")
+
+    async def create_ticket(
+        self,
+        channel_id: int,
+        creator_id: int,
+        ticket_type: str = "SPRITE",
+        epic_name: Optional[str] = None,
+        discord_username: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        date_won: Optional[str] = None,
+        proof_url: Optional[str] = None
+    ) -> bool:
         """
         Registers a newly created ticket in the database.
-        Returns True if the row was inserted (first caller), False if it already existed.
-        This is used to prevent duplicate welcome embeds during Railway process overlaps.
+        Returns True if the row was inserted, False if it already existed.
         """
         now = int(time.time())
         async with aiosqlite.connect(self.path) as conn:
             async with conn.execute(
-                "INSERT OR IGNORE INTO tickets (channel_id, creator_id, created_at) VALUES (?, ?, ?)",
-                (channel_id, creator_id, now)
+                """
+                INSERT OR IGNORE INTO tickets (
+                    channel_id, creator_id, created_at, ticket_type,
+                    epic_name, discord_username, game_mode, date_won, proof_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (channel_id, creator_id, now, ticket_type, epic_name, discord_username, game_mode, date_won, proof_url)
             ) as cur:
                 await conn.commit()
                 return cur.rowcount > 0
@@ -107,6 +146,38 @@ class TicketDatabase:
                 )
             await conn.commit()
 
+    async def update_verification_check(self, channel_id: int, check_name: str, value: bool) -> None:
+        """Toggle verification checklist fields (winner_confirmed, rules_checked, win_limit_checked, prize_approved)."""
+        allowed = {"winner_confirmed", "rules_checked", "win_limit_checked", "prize_approved"}
+        if check_name not in allowed:
+            raise ValueError(f"Invalid verification check field: {check_name}")
+
+        async with aiosqlite.connect(self.path) as conn:
+            await conn.execute(
+                f"UPDATE tickets SET {check_name} = ? WHERE channel_id = ?",
+                (1 if value else 0, channel_id)
+            )
+            await conn.commit()
+
+    async def update_winner_status(self, channel_id: int, winner_status: str) -> None:
+        """Update visual ticket winner status (e.g., 🟡 Waiting for Verification, 🔵 Under Review, etc.)."""
+        async with aiosqlite.connect(self.path) as conn:
+            await conn.execute(
+                "UPDATE tickets SET winner_status = ? WHERE channel_id = ?",
+                (winner_status, channel_id)
+            )
+            await conn.commit()
+
+    async def mark_prize_sent(self, channel_id: int, staff_id: int) -> None:
+        """Mark V-Bucks / Prize as sent for a winner claim ticket."""
+        now = int(time.time())
+        async with aiosqlite.connect(self.path) as conn:
+            await conn.execute(
+                "UPDATE tickets SET prize_sent = 1, prize_sent_by = ?, prize_sent_at = ? WHERE channel_id = ?",
+                (staff_id, now, channel_id)
+            )
+            await conn.commit()
+
     async def add_ticket_role(self, role_id: int, added_by: int) -> bool:
         """Add a role to the authorized ticket managers list."""
         async with aiosqlite.connect(self.path) as conn:
@@ -135,3 +206,4 @@ class TicketDatabase:
                 return [row[0] for row in rows]
 
 ticket_db = TicketDatabase()
+

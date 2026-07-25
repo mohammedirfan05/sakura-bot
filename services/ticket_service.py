@@ -1,13 +1,17 @@
 """
 🌸 Sakura Bot — services/ticket_service.py
-Business logic for the Sakura native ticket system.
+Business logic for the Sakura native ticket system, including Custom Games Winner tickets.
 """
 
 import discord
 import asyncio
 import time
 import logging
-from core.config import ROLE_IDS, CHANNEL_IDS, NEON_RED, SUCCESS_GREEN, INFO_BLUE, BASE_BLACK
+from typing import Optional
+
+from core.config import (
+    ROLE_IDS, CHANNEL_IDS, NEON_RED, SUCCESS_GREEN, INFO_BLUE, BASE_BLACK, GOLD, WARNING_YELLOW
+)
 from cogs.tickets.ticket_database import ticket_db
 
 log = logging.getLogger(__name__)
@@ -36,7 +40,7 @@ class TicketService:
         dynamic_roles = set(await ticket_db.get_ticket_roles())
         return bool(dynamic_roles & member_role_ids)
 
-    # ── Ticket Creation ────────────────────────────────────────────────────────
+    # ── Standard Ticket Creation (Sprite Index) ────────────────────────────────
 
     @staticmethod
     async def create_ticket_channel(
@@ -75,7 +79,191 @@ class TicketService:
             safe_name = str(user.id)
         channel_name = f"ticket-{safe_name}"[:100]
 
-        # ── Permission overwrites ─────────────────────────────────────────────
+        overwrites = await TicketService._build_overwrites(guild, user)
+
+        # ── Create the channel ────────────────────────────────────────────────
+        from core.config import CATEGORY_IDS
+        category = guild.get_channel(CATEGORY_IDS.get("karma_court", 0))
+        try:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                category=category,
+                topic=f"[SAKURA_MANAGED] Ticket opened by {user.name} ({user.id})",
+                reason=f"Ticket opened by {user.name}"
+            )
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "❌ I don't have permission to create channels. Please contact a staff member.",
+                ephemeral=True
+            )
+        except discord.HTTPException as e:
+            log.error("Failed to create ticket channel: %s", e)
+            return await interaction.response.send_message(
+                "❌ Failed to create your ticket. Please try again.",
+                ephemeral=True
+            )
+
+        inserted = await ticket_db.create_ticket(channel.id, user.id, ticket_type="SPRITE")
+        if not inserted:
+            return await interaction.response.send_message(
+                f"✅ Your ticket has been created: {channel.mention}", ephemeral=True
+            )
+
+        # ── Build the management embed ───────────────────────────────────────
+        embed = discord.Embed(
+            title="🌸 Ticket Management",
+            description=(
+                f"Welcome {user.mention}! 👋\n"
+                "A member of staff will be with you shortly."
+            ),
+            color=BASE_BLACK
+        )
+        if fn_username:
+            embed.add_field(name="🎮 Fortnite Username", value=fn_username, inline=False)
+        if sprites_needed:
+            embed.add_field(name="🎨 Sprites Needed", value=sprites_needed, inline=False)
+        if extraction_method:
+            embed.add_field(name="⚙️ Extraction Method", value=extraction_method, inline=False)
+        embed.set_footer(text="Staff: use the buttons below to manage this ticket.")
+
+        view = TicketView()
+        msg = await channel.send(embed=embed, view=view)
+        try:
+            await msg.pin(reason="Sakura Ticket Management Pin")
+        except discord.Forbidden:
+            log.warning("Missing permission to pin in %s", channel.name)
+
+        await TicketService.log_action(
+            guild,
+            title="🎟️ Ticket Opened",
+            description=(
+                f"**Ticket:** {channel.mention}\n"
+                f"**Opened By:** {user.mention}\n"
+                f"**Fortnite Username:** {fn_username or 'N/A'}\n"
+                f"**Sprites Needed:** {sprites_needed or 'N/A'}\n"
+                f"**Extraction:** {extraction_method or 'N/A'}"
+            ),
+            color=SUCCESS_GREEN
+        )
+
+        await interaction.response.send_message(
+            f"✅ Your ticket has been created: {channel.mention}",
+            ephemeral=True
+        )
+
+    # ── Custom Games Winner Ticket Creation ───────────────────────────────────
+
+    @staticmethod
+    async def create_winner_ticket_channel(
+        interaction: discord.Interaction,
+        epic_name: str,
+        discord_username: str,
+        game_mode: str,
+        date_won: str,
+        proof_url: Optional[str] = None
+    ):
+        """
+        Called when a user submits the Winner Claim form.
+        Creates a private winner ticket channel with staff verification checklists.
+        """
+        from cogs.tickets.ticket_buttons import WinnerTicketView
+
+        guild = interaction.guild
+        user = interaction.user
+
+        # ── Duplicate check ──────────────────────────────────────────────────
+        existing = await ticket_db.get_open_ticket_by_user(user.id)
+        if existing:
+            existing_channel = guild.get_channel(existing["channel_id"])
+            if existing_channel:
+                return await interaction.response.send_message(
+                    f"❌ You already have an open ticket: {existing_channel.mention}\n"
+                    "Please use that ticket or ask staff to close it first.",
+                    ephemeral=True
+                )
+            await ticket_db.update_status(existing["channel_id"], "CLOSED")
+
+        safe_name = "".join(
+            c for c in user.display_name.lower() if c.isalnum() or c == "-"
+        ).strip("-")
+        if not safe_name:
+            safe_name = str(user.id)
+        channel_name = f"winner-{safe_name}"[:100]
+
+        overwrites = await TicketService._build_overwrites(guild, user)
+
+        from core.config import CATEGORY_IDS
+        category = guild.get_channel(CATEGORY_IDS.get("karma_court", 0))
+        try:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                category=category,
+                topic=f"[SAKURA_MANAGED] Winner Claim ticket opened by {user.name} ({user.id})",
+                reason=f"Winner Ticket opened by {user.name}"
+            )
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "❌ I don't have permission to create channels. Please contact staff.",
+                ephemeral=True
+            )
+        except discord.HTTPException as e:
+            log.error("Failed to create winner ticket channel: %s", e)
+            return await interaction.response.send_message(
+                "❌ Failed to create winner ticket. Please try again.",
+                ephemeral=True
+            )
+
+        inserted = await ticket_db.create_ticket(
+            channel_id=channel.id,
+            creator_id=user.id,
+            ticket_type="WINNER",
+            epic_name=epic_name,
+            discord_username=discord_username,
+            game_mode=game_mode,
+            date_won=date_won,
+            proof_url=proof_url
+        )
+        if not inserted:
+            return await interaction.response.send_message(
+                f"✅ Your ticket has been created: {channel.mention}", ephemeral=True
+            )
+
+        # Build & post pinned winner embed
+        ticket = await ticket_db.get_ticket(channel.id)
+        embed = TicketService._build_winner_embed(user, ticket)
+
+        view = WinnerTicketView()
+        msg = await channel.send(embed=embed, view=view)
+        try:
+            await msg.pin(reason="Sakura Winner Management Pin")
+        except discord.Forbidden:
+            pass
+
+        await TicketService.log_action(
+            guild,
+            title="🏆 Winner Claim Ticket Opened",
+            description=(
+                f"**Ticket:** {channel.mention}\n"
+                f"**Opened By:** {user.mention}\n"
+                f"**Epic Games Name:** {epic_name}\n"
+                f"**Discord Username:** {discord_username}\n"
+                f"**Game Mode Won:** {game_mode}\n"
+                f"**Date Won:** {date_won}"
+            ),
+            color=GOLD
+        )
+
+        await interaction.response.send_message(
+            f"✅ Your Winner Claim ticket has been created: {channel.mention}",
+            ephemeral=True
+        )
+
+    # ── Permission Helper ──────────────────────────────────────────────────────
+
+    @staticmethod
+    async def _build_overwrites(guild: discord.Guild, user: discord.User) -> dict:
         overwrites: dict = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             user: discord.PermissionOverwrite(
@@ -112,7 +300,7 @@ class TicketService:
                 embed_links=True,
             )
 
-        bot_member = guild.get_member(interaction.client.user.id)
+        bot_member = guild.get_member(guild.me.id if guild.me else 0)
         if bot_member:
             overwrites[bot_member] = discord.PermissionOverwrite(
                 view_channel=True,
@@ -125,86 +313,236 @@ class TicketService:
                 embed_links=True,
                 pin_messages=True,
             )
+        return overwrites
 
-        # ── Create the channel ────────────────────────────────────────────────
-        from core.config import CATEGORY_IDS
-        category = guild.get_channel(CATEGORY_IDS.get("karma_court", 0))
-        try:
-            channel = await guild.create_text_channel(
-                name=channel_name,
-                overwrites=overwrites,
-                category=category,
-                topic=f"[SAKURA_MANAGED] Ticket opened by {user.name} ({user.id})",
-                reason=f"Ticket opened by {user.name}"
-            )
-        except discord.Forbidden:
-            return await interaction.response.send_message(
-                "❌ I don't have permission to create channels. Please contact a staff member.",
-                ephemeral=True
-            )
-        except discord.HTTPException as e:
-            log.error("Failed to create ticket channel: %s", e)
-            return await interaction.response.send_message(
-                "❌ Failed to create your ticket. Please try again.",
-                ephemeral=True
-            )
+    # ── Embed Helper for Winner Ticket ────────────────────────────────────────
 
-        # ── Register in DB (idempotency guard) ───────────────────────────────
-        # Returns False if another process already inserted this channel_id.
-        # In that case, the other process will handle sending the embed — bail out now.
-        inserted = await ticket_db.create_ticket(channel.id, user.id)
-        if not inserted:
-            log.warning(
-                "create_ticket_channel: channel %s already in DB — skipping embed (duplicate process).",
-                channel.id
-            )
-            await interaction.response.send_message(
-                f"✅ Your ticket has been created: {channel.mention}", ephemeral=True
-            )
-            return
-
-        # ── Build the management embed with form answers ──────────────────────
+    @staticmethod
+    def _build_winner_embed(creator: discord.User, ticket: dict) -> discord.Embed:
+        status = ticket.get("winner_status") or "🟡 Waiting for Verification"
+        
         embed = discord.Embed(
-            title="🌸 Ticket Management",
+            title="🏆 Custom Games Winner Ticket",
             description=(
-                f"Welcome {user.mention}! 👋\n"
-                "A member of staff will be with you shortly."
+                f"Welcome {creator.mention}! 🎉 Congratulations on your Victory Royale!\n"
+                "Our staff team will verify your win details below before issuing your prize."
             ),
-            color=BASE_BLACK
+            color=GOLD
         )
-        if fn_username:
-            embed.add_field(name="🎮 Fortnite Username", value=fn_username, inline=False)
-        if sprites_needed:
-            embed.add_field(name="🎨 Sprites Needed", value=sprites_needed, inline=False)
-        if extraction_method:
-            embed.add_field(name="⚙️ Extraction Method", value=extraction_method, inline=False)
-        embed.set_footer(text="Staff: use the buttons below to manage this ticket.")
 
-        view = TicketView()
-        msg = await channel.send(embed=embed, view=view)
+        # Winner Information
+        info_lines = [
+            f"• **Epic Games Name:** `{ticket.get('epic_name', 'N/A')}`",
+            f"• **Discord Username:** `{ticket.get('discord_username', 'N/A')}`",
+            f"• **Game Mode Won:** `{ticket.get('game_mode', 'N/A')}`",
+            f"• **Date Won:** `{ticket.get('date_won', 'N/A')}`",
+        ]
+        if ticket.get("proof_url"):
+            info_lines.append(f"• **Proof Link:** [Click to view proof]({ticket.get('proof_url')})")
+        else:
+            info_lines.append("• **Proof:** Please upload your Victory Royale screenshot in this channel.")
+
+        embed.add_field(name="📋 Winner Information", value="\n".join(info_lines), inline=False)
+
+        # Staff Verification Checklist
+        wc = "✅" if ticket.get("winner_confirmed") else "❌"
+        rc = "✅" if ticket.get("rules_checked") else "❌"
+        lc = "✅" if ticket.get("win_limit_checked") else "❌"
+        pa = "✅" if ticket.get("prize_approved") else "❌"
+
+        checklist_text = (
+            f"{wc} **Winner confirmed**\n"
+            f"{rc} **Rules checked** (no teaming, cheating, exploiting)\n"
+            f"{lc} **Win limit checked**\n"
+            f"{pa} **Prize approved**"
+        )
+        embed.add_field(name="🔍 Staff Verification", value=checklist_text, inline=False)
+
+        # Prize Delivery
+        ps = "✅" if ticket.get("prize_sent") else "❌"
+        sent_by = f"<@{ticket['prize_sent_by']}>" if ticket.get("prize_sent_by") else "N/A"
+        date_sent = f"<t:{ticket['prize_sent_at']}:f>" if ticket.get("prize_sent_at") else "N/A"
+
+        prize_text = (
+            f"• **V-Bucks / Prize Sent:** {ps}\n"
+            f"• **Sent By:** {sent_by}\n"
+            f"• **Date Sent:** {date_sent}"
+        )
+        embed.add_field(name="🎁 Prize Delivery", value=prize_text, inline=False)
+
+        # Status field
+        embed.add_field(name="🏷️ Ticket Status", value=f"**{status}**", inline=False)
+        embed.set_footer(text="Staff: use the control buttons below to update checks & status.")
+        return embed
+
+    # ── Refresh Pinned Winner Embed ────────────────────────────────────────────
+
+    @staticmethod
+    async def refresh_winner_embed(channel: discord.TextChannel, ticket: dict):
+        """Helper to find and update the pinned winner embed in the channel."""
+        creator = channel.guild.get_member(ticket["creator_id"])
+        if not creator:
+            creator = await channel.guild.fetch_member(ticket["creator_id"])
+
+        embed = TicketService._build_winner_embed(creator, ticket)
+
+        # Find pinned message or last bot message
         try:
-            await msg.pin(reason="Sakura Ticket Management Pin")
-        except discord.Forbidden:
-            log.warning("Missing permission to pin in %s", channel.name)
+            pinned = await channel.pins()
+            for msg in pinned:
+                if msg.author == channel.guild.me and msg.embeds and "Custom Games Winner Ticket" in (msg.embeds[0].title or ""):
+                    await msg.edit(embed=embed)
+                    return
+        except discord.HTTPException:
+            pass
 
-        # ── Log ───────────────────────────────────────────────────────────────
+        # Fallback: search recent messages
+        async for msg in channel.history(limit=20):
+            if msg.author == channel.guild.me and msg.embeds and "Custom Games Winner Ticket" in (msg.embeds[0].title or ""):
+                await msg.edit(embed=embed)
+                return
+
+    # ── Interactive Staff Actions for Winner Tickets ───────────────────────────
+
+    @staticmethod
+    async def open_verification_checklist(interaction: discord.Interaction):
+        """Open ephemeral checklist toggle menu for staff."""
+        if not await TicketService.is_staff(interaction.user):
+            return await interaction.response.send_message(
+                "❌ You do not have permission to use staff verification actions.", ephemeral=True
+            )
+        from cogs.tickets.ticket_buttons import VerificationChecklistView
+        await interaction.response.send_message(
+            "Select a verification check to toggle state:",
+            view=VerificationChecklistView(),
+            ephemeral=True
+        )
+
+    @staticmethod
+    async def toggle_verification(interaction: discord.Interaction, check_key: str):
+        """Toggle verification check state and update embed."""
+        if not await TicketService.is_staff(interaction.user):
+            return await interaction.response.send_message(
+                "❌ Permission denied.", ephemeral=True
+            )
+
+        ticket = await ticket_db.get_ticket(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message(
+                "❌ Ticket record not found.", ephemeral=True
+            )
+
+        current_val = bool(ticket.get(check_key))
+        new_val = not current_val
+        await ticket_db.update_verification_check(interaction.channel_id, check_key, new_val)
+
+        updated_ticket = await ticket_db.get_ticket(interaction.channel_id)
+        await TicketService.refresh_winner_embed(interaction.channel, updated_ticket)
+
+        field_labels = {
+            "winner_confirmed": "Winner confirmed",
+            "rules_checked": "Rules checked",
+            "win_limit_checked": "Win limit checked",
+            "prize_approved": "Prize approved"
+        }
+        label = field_labels.get(check_key, check_key)
+        state_str = "✅ Checked" if new_val else "❌ Unchecked"
+
+        await interaction.response.send_message(
+            f"Updated **{label}** to **{state_str}**.", ephemeral=True
+        )
+
         await TicketService.log_action(
-            guild,
-            title="🎟️ Ticket Opened",
+            interaction.guild,
+            title="🔍 Verification Check Updated",
             description=(
-                f"**Ticket:** {channel.mention}\n"
-                f"**Opened By:** {user.mention}\n"
-                f"**Fortnite Username:** {fn_username or 'N/A'}\n"
-                f"**Sprites Needed:** {sprites_needed or 'N/A'}\n"
-                f"**Extraction:** {extraction_method or 'N/A'}"
+                f"**Ticket:** {interaction.channel.mention}\n"
+                f"**Staff Member:** {interaction.user.mention}\n"
+                f"**Check Item:** {label}\n"
+                f"**New State:** {state_str}"
+            ),
+            color=INFO_BLUE
+        )
+
+    @staticmethod
+    async def open_status_menu(interaction: discord.Interaction):
+        """Open ephemeral status select menu for staff."""
+        if not await TicketService.is_staff(interaction.user):
+            return await interaction.response.send_message(
+                "❌ You do not have permission to update ticket status.", ephemeral=True
+            )
+        from cogs.tickets.ticket_buttons import StatusSelectView
+        await interaction.response.send_message(
+            "Select the new status for this winner claim ticket:",
+            view=StatusSelectView(),
+            ephemeral=True
+        )
+
+    @staticmethod
+    async def set_winner_status(interaction: discord.Interaction, new_status: str):
+        """Update ticket winner status and refresh embed & topic."""
+        if not await TicketService.is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Permission denied.", ephemeral=True)
+
+        ticket = await ticket_db.get_ticket(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message("❌ Ticket record not found.", ephemeral=True)
+
+        await ticket_db.update_winner_status(interaction.channel_id, new_status)
+        updated_ticket = await ticket_db.get_ticket(interaction.channel_id)
+        await TicketService.refresh_winner_embed(interaction.channel, updated_ticket)
+
+        # Notify channel
+        await interaction.channel.send(
+            f"🏷️ Ticket status updated to **{new_status}** by {interaction.user.mention}."
+        )
+
+        await interaction.response.send_message(
+            f"✅ Status updated to **{new_status}**.", ephemeral=True
+        )
+
+        await TicketService.log_action(
+            interaction.guild,
+            title="🏷️ Winner Ticket Status Changed",
+            description=(
+                f"**Ticket:** {interaction.channel.mention}\n"
+                f"**Updated By:** {interaction.user.mention}\n"
+                f"**New Status:** {new_status}"
+            ),
+            color=WARNING_YELLOW
+        )
+
+    @staticmethod
+    async def mark_prize_sent(interaction: discord.Interaction):
+        """Mark V-Bucks/Prize as sent for winner ticket."""
+        if not await TicketService.is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Permission denied.", ephemeral=True)
+
+        ticket = await ticket_db.get_ticket(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message("❌ Ticket record not found.", ephemeral=True)
+
+        await ticket_db.mark_prize_sent(interaction.channel_id, interaction.user.id)
+        await ticket_db.update_winner_status(interaction.channel_id, "✅ Completed")
+
+        updated_ticket = await ticket_db.get_ticket(interaction.channel_id)
+        await TicketService.refresh_winner_embed(interaction.channel, updated_ticket)
+
+        await interaction.channel.send(
+            f"🎁 **Prize Delivered!** V-Bucks have been sent by {interaction.user.mention}. Congratulations! 🎉"
+        )
+
+        await interaction.response.send_message("✅ Marked prize as sent and ticket as Completed.", ephemeral=True)
+
+        await TicketService.log_action(
+            interaction.guild,
+            title="🎁 Winner Prize Sent",
+            description=(
+                f"**Ticket:** {interaction.channel.mention}\n"
+                f"**Sent By:** {interaction.user.mention}\n"
+                f"**Winner:** <@{ticket['creator_id']}>"
             ),
             color=SUCCESS_GREEN
-        )
-
-        # ── Acknowledge (modal submission is the interaction, so respond here) ─
-        await interaction.response.send_message(
-            f"✅ Your ticket has been created: {channel.mention}",
-            ephemeral=True
         )
 
     # ── Claim ──────────────────────────────────────────────────────────────────
@@ -245,7 +583,6 @@ class TicketService:
 
         await interaction.response.edit_message(view=view)
 
-        # Rename channel
         new_name = f"claimed-{interaction.user.display_name.lower()}"
         try:
             await interaction.channel.edit(
@@ -256,14 +593,12 @@ class TicketService:
         except discord.HTTPException:
             log.warning("Rate limited when renaming %s", interaction.channel.name)
 
-        # Send greeting
         greeting_text = (
             f"👋 Hi <@{ticket['creator_id']}>!\n\n"
             f"I'm {interaction.user.mention} and I'll be assisting you today.\n\n"
             "**Before we get started:**\n"
-            "• Maximum of 4 sprite requests per ticket.\n"
-            "• Return borrowed sprites after indexing.\n"
-            "• Confirmed scams result in a permanent ban.\n"
+            "• Please ensure all details and screenshots are uploaded.\n"
+            "• Staff will verify your win and deliver your prize shortly.\n"
             "• Tickets inactive for 24 hours may be closed.\n\n"
             "Please let me know when you're ready."
         )
