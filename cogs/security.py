@@ -2,14 +2,14 @@
 🌸 Sakura Bot — cogs/security.py
 Anti-Nuke / Anti-Abuse security layer.
 Ensures that only authorized users (Owner, Co-Owner) can assign critical roles.
-If a rogue mod tries to allocate critical roles, Sakura will strip their roles and quarantine them.
+If a rogue user tries to allocate critical roles, Sakura will strip their roles and quarantine them.
 """
 
 import discord
 from discord.ext import commands
 import asyncio
+import datetime
 import logging
-from typing import Set
 
 from core.config import (
     ROLE_IDS,
@@ -29,23 +29,26 @@ class Security(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Monitor role changes to prevent unauthorized assignment of critical roles."""
-        
-        # Only care about role additions
+
+        # 1. Ignore updates on bot accounts (Arcane, Dyno, Sakura, MEE6, etc.)
+        if after.bot:
+            return
+
+        # 2. Only care about role additions
         new_roles = set(after.roles) - set(before.roles)
         if not new_roles:
             return
 
-        # Check if any of the new roles are critical
+        # 3. Check if any of the newly added roles are critical
         critical_added = [role for role in new_roles if role.id in CRITICAL_ROLE_IDS]
         if not critical_added:
             return
 
-        # Wait briefly to ensure Discord's audit log has populated
+        # Wait briefly for Discord's audit log to populate
         await asyncio.sleep(2)
 
-        # Fetch recent audit logs for member role updates
+        # 4. Fetch recent audit logs for member role updates
         try:
-            # Look at recent role updates for this specific target user
             audit_logs = [
                 entry async for entry in after.guild.audit_logs(
                     action=discord.AuditLogAction.member_role_update,
@@ -55,60 +58,83 @@ class Security(commands.Cog):
         except discord.Forbidden:
             log.warning("Security Cog: Missing View Audit Log permissions!")
             return
+        except discord.HTTPException as exc:
+            log.error("Security Cog: Failed to fetch audit logs: %s", exc)
+            return
 
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
         actor = None
+
         for entry in audit_logs:
-            # If the target of the audit log is the user who just got the role
-            if entry.target.id == after.id:
-                # Check if the critical role was added in this exact entry
-                # entry.after.roles contains roles that were added or modified
-                if hasattr(entry.after, 'roles'):
-                    added_role_ids = [r.id for r in entry.after.roles]
+            # Safely check entry.target and audit log age (must be within last 15 seconds)
+            if entry.target and entry.target.id == after.id:
+                if (now_utc - entry.created_at).total_seconds() > 15:
+                    continue  # Ignore stale audit entries
+
+                # Check if critical role ID is present in entry's added roles
+                if hasattr(entry, 'after') and hasattr(entry.after, 'roles'):
+                    added_role_ids = {r.id for r in entry.after.roles}
                     if any(cr.id in added_role_ids for cr in critical_added):
                         actor = entry.user
                         break
-        
+
         if not actor:
-            log.warning(f"Security Cog: Could not find audit log entry for role addition on {after}.")
+            # Could not definitively attribute this role assignment within 15s — do not penalize
+            log.debug("Security Cog: No recent audit log entry found for critical role assignment on %s.", after)
             return
 
-        # If Sakura bot did it herself (or another bot maybe, but definitely ignore Sakura)
-        if actor.id == self.bot.user.id:
+        # 5. ABSOLUTE BOT EXEMPTION: Ignore any role change initiated by a bot (Sakura or 3rd-party bots)
+        if getattr(actor, "bot", False) or actor.id == self.bot.user.id:
             return
-            
-        # Check if actor has authorization
+
+        # 6. Check if actor has owner/co-owner authorization
         if isinstance(actor, discord.Member):
             actor_role_ids = {r.id for r in actor.roles}
-            # If actor has Owner or Co-Owner role, they are allowed.
             if any(auth_id in actor_role_ids for auth_id in AUTHORIZED_ASSIGNER_IDS):
-                log.info(f"Security Cog: Authorized role assignment by {actor}.")
+                log.info("Security Cog: Authorized role assignment by %s.", actor)
                 return
         else:
-            # If actor is not a Member (e.g. they left, or it's a webhook/system), we skip
+            # Actor is not a current guild member (webhook/system/left user)
             return
 
         # ==========================================
         # ROGUE MODERATOR DETECTED
         # ==========================================
-        log.warning(f"🚨 ANTI-NUKE TRIGGERED: {actor} assigned critical roles {critical_added} to {after} without authorization!")
+        log.warning(
+            "🚨 ANTI-NUKE TRIGGERED: %s assigned critical roles %s to %s without authorization!",
+            actor, [r.name for r in critical_added], after
+        )
 
         try:
-            # 1. Strip ALL roles from the rogue actor (except @everyone and premium/integration roles)
-            removable_roles = [r for r in actor.roles if r != after.guild.default_role and not r.is_integration() and not r.is_premium_subscriber()]
+            # 1. Strip ALL roles from the rogue actor (except @everyone and integration/booster roles)
+            removable_roles = [
+                r for r in actor.roles
+                if r != after.guild.default_role and not r.is_integration() and not r.is_premium_subscriber()
+            ]
             if removable_roles:
-                await actor.remove_roles(*removable_roles, reason="Sakura Security: Unauthorized critical role assignment (Anti-Nuke).")
-            
-            # 2. Add Quarantined Role
-            quarantine_role = after.guild.get_role(ROLE_IDS.get("quarantined"))
-            if quarantine_role:
-                await actor.add_roles(quarantine_role, reason="Sakura Security: Rogue staff quarantine.")
-                
+                await actor.remove_roles(
+                    *removable_roles,
+                    reason="Sakura Security: Unauthorized critical role assignment (Anti-Nuke)."
+                )
+
+            # 2. Add Quarantined Role if configured
+            quarantine_role_id = ROLE_IDS.get("quarantined")
+            if quarantine_role_id:
+                quarantine_role = after.guild.get_role(quarantine_role_id)
+                if quarantine_role:
+                    await actor.add_roles(quarantine_role, reason="Sakura Security: Rogue staff quarantine.")
+
             # 3. Undo the critical role assignment on the target
-            await after.remove_roles(*critical_added, reason="Sakura Security: Reverting unauthorized role assignment.")
-            
+            await after.remove_roles(
+                *critical_added,
+                reason="Sakura Security: Reverting unauthorized role assignment."
+            )
+
         except discord.Forbidden:
-            log.error("Security Cog: Missing permissions to modify roles during an Anti-Nuke trigger!")
-            
+            log.error("Security Cog: Missing permissions to modify roles during Anti-Nuke trigger!")
+        except discord.HTTPException as exc:
+            log.error("Security Cog: HTTP error during Anti-Nuke action: %s", exc)
+
         # 4. Send Alerts
         alert_msg = (
             f"🚨 **ANTI-NUKE ALERT** 🚨\n\n"
@@ -119,7 +145,7 @@ class Security(commands.Cog):
             f"• {actor.mention} has been Quarantined.\n"
             f"• Critical roles removed from {after.mention} to revert the action."
         )
-        
+
         # Notify Mod Logs
         mod_log_channel = after.guild.get_channel(CHANNEL_IDS.get("mod_logs"))
         if mod_log_channel:
@@ -127,14 +153,15 @@ class Security(commands.Cog):
                 title="🚨 Sakura Security: Anti-Nuke Triggered 🚨",
                 description=alert_msg,
                 color=ERROR_RED,
-                timestamp=discord.utils.utcnow()
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
             )
             await mod_log_channel.send(embed=embed)
-            
-        # Notify Staff Chat to ping Owners
+
+        # Notify Staff Chat
         staff_chat = after.guild.get_channel(CHANNEL_IDS.get("staff_chat"))
         if staff_chat:
             await staff_chat.send(alert_msg)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Security(bot))
