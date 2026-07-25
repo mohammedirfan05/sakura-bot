@@ -514,7 +514,7 @@ class TicketService:
 
     @staticmethod
     async def mark_prize_sent(interaction: discord.Interaction):
-        """Mark V-Bucks/Prize as sent for winner ticket."""
+        """Mark V-Bucks/Prize as sent for winner ticket and post to Hall of Fame."""
         if not await TicketService.is_staff(interaction.user):
             return await interaction.response.send_message("❌ Permission denied.", ephemeral=True)
 
@@ -532,7 +532,10 @@ class TicketService:
             f"🎁 **Prize Delivered!** V-Bucks have been sent by {interaction.user.mention}. Congratulations! 🎉"
         )
 
-        await interaction.response.send_message("✅ Marked prize as sent and ticket as Completed.", ephemeral=True)
+        # Post permanent record to #hall-of-fame channel
+        await TicketService.post_to_hall_of_fame(interaction.guild, updated_ticket, interaction.user)
+
+        await interaction.response.send_message("✅ Marked prize as sent, posted to #hall-of-fame, and ticket set to Completed.", ephemeral=True)
 
         await TicketService.log_action(
             interaction.guild,
@@ -544,6 +547,51 @@ class TicketService:
             ),
             color=SUCCESS_GREEN
         )
+
+    @staticmethod
+    async def post_to_hall_of_fame(guild: discord.Guild, ticket: dict, staff_member: discord.User):
+        """Post a permanent winner receipt record in the #hall-of-fame channel."""
+        channel_id = CHANNEL_IDS.get("hall_of_fame")
+        if not channel_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        winner_id = ticket.get("creator_id")
+        epic_name = ticket.get("epic_name", "N/A")
+        discord_username = ticket.get("discord_username", "N/A")
+        game_mode = ticket.get("game_mode", "N/A")
+        date_won = ticket.get("date_won", "N/A")
+        proof_url = ticket.get("proof_url")
+        sent_at = ticket.get("prize_sent_at", int(time.time()))
+
+        embed = discord.Embed(
+            title="🏆 Custom Games — Winner Hall of Fame",
+            description=f"🎉 Congratulations <@{winner_id}> on your Victory Royale!",
+            color=GOLD,
+            timestamp=discord.utils.utcnow()
+        )
+
+        embed.add_field(name="👤 Winner", value=f"<@{winner_id}>\n(`{discord_username}`)", inline=True)
+        embed.add_field(name="🎮 Epic Games Name", value=f"`{epic_name}`", inline=True)
+        embed.add_field(name="🕹️ Game Mode Won", value=f"`{game_mode}`", inline=True)
+
+        embed.add_field(name="📅 Date Won", value=f"`{date_won}`", inline=True)
+        embed.add_field(name="🎁 Delivered By", value=staff_member.mention, inline=True)
+        embed.add_field(name="🕒 Delivered At", value=f"<t:{sent_at}:f>", inline=True)
+
+        if proof_url and proof_url.startswith("http"):
+            embed.add_field(name="🖼️ Victory Proof", value=f"[Click to View Screenshot]({proof_url})", inline=False)
+            embed.set_thumbnail(url=proof_url)
+
+        embed.set_footer(text="🌸 Sakura Bot — Custom Games Prize Receipt")
+
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            log.warning("Failed to post to #hall-of-fame channel: %s", e)
+
 
     # ── Claim ──────────────────────────────────────────────────────────────────
 

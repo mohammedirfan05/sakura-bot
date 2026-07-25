@@ -124,6 +124,8 @@ CHANNEL_IDS = {
     "appeals":       1521348197149180005,
     "bug_reports":   1521447702725001358,
     "contact_staff": 1521447705107238912,
+    "hall_of_fame":   1530562923339186196,
+
 
     # 🖤 CREATOR HUB
     "tiktok":        1521447695535833233,
