@@ -16,7 +16,18 @@ from discord.ext import commands
 log = logging.getLogger(__name__)
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL   = "llama-3.1-8b-instant"
+# Active recommended models on Groq in order of priority
+CANDIDATE_MODELS = [
+    os.getenv("GROQ_MODEL", "").strip(),
+    "llama-3.3-70b-versatile",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+]
+GROQ_MODELS = [m for m in CANDIDATE_MODELS if m]
+# Deduplicate while preserving order
+GROQ_MODELS = list(dict.fromkeys(GROQ_MODELS))
 
 SAKURA_PERSONA = """You are Sakura. You live in the Karma Discord server. You are not an AI assistant. You are not helpful by default. You are a real person who happens to know everything and is slightly unhinged.
 
@@ -68,6 +79,7 @@ class AIChat(commands.Cog):
         self._api_key: str = os.getenv("GROQ_API_KEY", "").strip()
         self._status: str  = "unknown"
         self._session: aiohttp.ClientSession | None = None
+        self._current_model: str = GROQ_MODELS[0] if GROQ_MODELS else "llama-3.3-70b-versatile"
 
         # memory[channel_id] = list of {role, content} dicts
         self.memory: dict[int, list[dict]] = {}
@@ -87,8 +99,8 @@ class AIChat(commands.Cog):
             log.error("[AIChat] %s — this is probably a Gemini key, not a Groq key.", self._status)
             log.error("[AIChat] Get a Groq key at: https://console.groq.com/keys")
         else:
-            self._status = f"ready — {GROQ_MODEL}"
-            log.info("[AIChat] Groq key loaded (%.8s...). Model: %s", self._api_key, GROQ_MODEL)
+            self._status = f"ready — {self._current_model}"
+            log.info("[AIChat] Groq key loaded (%.8s...). Model: %s", self._api_key, self._current_model)
 
     # ── aiohttp session — created once, reused ─────────────────────────────────
 
@@ -101,43 +113,61 @@ class AIChat(commands.Cog):
             await self._session.close()
             log.info("[AIChat] aiohttp session closed.")
 
-    # ── Core API call ──────────────────────────────────────────────────────────
+    # ── Core API call with model fallback ──────────────────────────────────────
 
     async def _ask_groq(self, messages: list[dict]) -> str:
         """
         Send messages to Groq and return the reply text.
-        Raises ValueError on auth/model errors, RuntimeError on other API errors.
+        Automatically falls back to alternative models if the primary model 404s.
         """
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": messages,
-            "temperature": 0.85,
-            "max_tokens": 256,
-        }
 
-        async with self._session.post(
-            GROQ_API_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
-        ) as resp:
-            data = await resp.json()
+        # Try current model first, then remaining fallbacks
+        models_to_try = [self._current_model] + [m for m in GROQ_MODELS if m != self._current_model]
 
-            if resp.status == 200:
-                return data["choices"][0]["message"]["content"]
+        last_error = None
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.85,
+                "max_tokens": 256,
+            }
 
-            # ── Surface useful error info into the logs ────────────────────
-            err_msg = data.get("error", {}).get("message", str(data))
-            err_type = data.get("error", {}).get("type", "unknown")
+            async with self._session.post(
+                GROQ_API_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=20)
+            ) as resp:
+                data = await resp.json()
 
-            log.error("[AIChat] Groq API %d | type=%s | %s", resp.status, err_type, err_msg)
+                if resp.status == 200:
+                    if self._current_model != model:
+                        log.info("[AIChat] Switched active model to: %s", model)
+                        self._current_model = model
+                        self._status = f"ready — {model}"
+                    return data["choices"][0]["message"]["content"]
 
-            if resp.status in (401, 403):
-                raise ValueError(f"Auth failed ({resp.status}): {err_msg}")
-            if resp.status == 429:
-                raise ConnectionRefusedError(f"Rate limited: {err_msg}")
-            raise RuntimeError(f"Groq {resp.status}: {err_msg}")
+                err_msg = data.get("error", {}).get("message", str(data))
+                err_type = data.get("error", {}).get("type", "unknown")
+                log.warning("[AIChat] Groq API %d (%s) on model %s: %s", resp.status, err_type, model, err_msg)
+
+                if resp.status in (401, 403):
+                    raise ValueError(f"Auth failed ({resp.status}): {err_msg}")
+                if resp.status == 429:
+                    raise ConnectionRefusedError(f"Rate limited: {err_msg}")
+
+                # If 404 or model not found, loop to next fallback model
+                if resp.status == 404 or "model" in err_msg.lower():
+                    last_error = RuntimeError(f"Groq {resp.status}: {err_msg}")
+                    continue
+
+                raise RuntimeError(f"Groq {resp.status}: {err_msg}")
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("All Groq fallback models failed.")
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -167,7 +197,7 @@ class AIChat(commands.Cog):
         color = discord.Color.green() if ready else discord.Color.red()
         embed = discord.Embed(title="🩸 Sakura AI Status", color=color)
         embed.add_field(name="Status",    value="✅ Ready" if ready else "❌ Not ready", inline=True)
-        embed.add_field(name="Model",     value=GROQ_MODEL,   inline=True)
+        embed.add_field(name="Model",     value=self._current_model, inline=True)
         embed.add_field(name="Session",   value="✅" if self._session else "❌", inline=True)
         embed.add_field(name="Key prefix",
                         value=f"`{self._api_key[:8]}...`" if self._api_key else "*(empty)*",
