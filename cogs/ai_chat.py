@@ -19,7 +19,10 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Active recommended models on Groq in order of priority
 CANDIDATE_MODELS = [
     os.getenv("GROQ_MODEL", "").strip(),
+    "openai/gpt-oss-20b",
     "llama-3.3-70b-versatile",
+    "qwen/qwen3-32b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
     "llama3-70b-8192",
     "llama3-8b-8192",
     "mixtral-8x7b-32768",
