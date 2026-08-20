@@ -641,15 +641,26 @@ class TicketService:
         except discord.HTTPException:
             log.warning("Rate limited when renaming %s", interaction.channel.name)
 
-        greeting_text = (
-            f"👋 Hi <@{ticket['creator_id']}>!\n\n"
-            f"I'm {interaction.user.mention} and I'll be assisting you today.\n\n"
-            "**Before we get started:**\n"
-            "• Please ensure all details and screenshots are uploaded.\n"
-            "• Staff will verify your win and deliver your prize shortly.\n"
-            "• Tickets inactive for 24 hours may be closed.\n\n"
-            "Please let me know when you're ready."
-        )
+        if ticket.get("ticket_type") == "WINNER":
+            greeting_text = (
+                f"👋 Hi <@{ticket['creator_id']}>!\n\n"
+                f"I'm {interaction.user.mention} and I'll be assisting you today.\n\n"
+                "**Before we get started:**\n"
+                "• Please ensure all details and screenshots are uploaded.\n"
+                "• Staff will verify your win and deliver your prize shortly.\n"
+                "• Tickets inactive for 24 hours may be closed.\n\n"
+                "Please let me know when you're ready."
+            )
+        else:
+            greeting_text = (
+                f"👋 Hi <@{ticket['creator_id']}>!\n\n"
+                f"I'm {interaction.user.mention} and I'll be assisting you today with your sprite request.\n\n"
+                "**Before we get started:**\n"
+                "• Please ensure your sprite details and preferences are clear.\n"
+                "• Staff will assist you with your request shortly.\n"
+                "• Tickets inactive for 24 hours may be closed.\n\n"
+                "Please let me know when you're ready."
+            )
         greeting_msg = await interaction.channel.send(greeting_text)
         try:
             await greeting_msg.pin(reason="Staff greeting pinned")
